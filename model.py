@@ -40,7 +40,7 @@ class NED(nn.Module):
         self.relu = nn.ReLU()
 
     def encode(self, x):
-        h1 = self.fc1(x)
+        h1 = self.fc1(x.float())
         h1 = self.relu(self.bn1(h1))
 
         h2 = self.fc2(h1)

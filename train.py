@@ -12,11 +12,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
+import ray
 from ray import tune
 from ray import train
 from ray.train import Checkpoint, get_checkpoint
 from ray.tune.schedulers import ASHAScheduler
 import ray.cloudpickle as pickle
+from ray.air import session
 
 def make_argument_parser():
     parser = argparse.ArgumentParser()
@@ -73,14 +75,12 @@ def train(config, data_dir):
         net.train()
         epoch_loss = 0
         for batch_idx, (x, y) in enumerate(train_loader):
-            x = Variable(x)
-            y = Variable(y)
-            x.cuda()
-            y.cuda()
+            x = x.to(device)
+            y = y.to(device)
 
             optimizer.zero_grad()
 
-            reconstructions = model(x)
+            reconstructions = net(x)
             # loss = criterion(reconstructions, y)
             loss = F.smooth_l1_loss(reconstructions, y)
             loss.backward()
@@ -93,12 +93,10 @@ def train(config, data_dir):
         net.eval()
         val_loss = 0
         for idx, (x, y) in enumerate(val_loader):
-            x = Variable(x)
-            y = Variable(y)
-            x.cuda()
-            y.cuda()
+            x = x.to(device)
+            y = y.to(device)
 
-            reconstructions = model(x)
+            reconstructions = net(x)
             # loss = criterion(reconstructions,y)
             loss = F.smooth_l1_loss(reconstructions, y)
             val_loss += loss.data
@@ -111,18 +109,18 @@ def train(config, data_dir):
             'optimizer_state_dict': optimizer.state_dict()
         }
 
-        with tempfile.TemporaryDirectory as checkpoint_dir:
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
             data_path = Path(checkpoint_dir) / 'data.pkl'
             with open(data_path, 'wb') as fp:
                 pickle.dump(checkpoint_data, fp)
 
             checkpoint = Checkpoint.from_directory(checkpoint_dir)
-            train.report({'loss': val_loss}, checkpoint=checkpoint)
+            session.report({'loss': val_loss.cpu().item()}, checkpoint=checkpoint)
     print("finished training!")
 
 def test_accuracy(net, data_dir):
     net.eval()
-    net.cuda()
+    net.to("cuda:0") # just in case
 
     hf = h5py.File(data_dir + 'test_Fisher_nonorm.h5', 'r')
     X = np.array(hf['dataset'])
@@ -140,13 +138,13 @@ def test_accuracy(net, data_dir):
         ll = random.choice(list(idx_same_speaker - set([idx])))
         y_fake = X[ll, 228:-1]
 
-        x = Variable(torch.from_numpy(x))
-        y = Variable(torch.from_numpy(y))
-        y_fake = Variable(torch.from_numpy(y_fake))
+        x = torch.from_numpy(x)
+        y = torch.from_numpy(y)
+        y_fake = torch.from_numpy(y_fake)
 
-        x.cuda()
-        y.cuda()
-        y_fake.cuda()
+        x = x.to(device)
+        y = y.to(device)
+        y_fake = y_fake.to(device)
 
         z_x = net.embedding(x)
         z_y = net.embedding(y)
@@ -178,14 +176,22 @@ if __name__ == '__main__':
         grace_period=1,
         reduction_factor=2
     )
-    
-    result = tune.run(
+
+    trainable_with_gpu = tune.with_resources(
         partial(train, data_dir=args.data_dir),
-        resources_per_trial={'cpu': 1, 'gpu': 1},
-        config=config,
-        num_samples=10,
-        scheduler=scheduler
+        {'cpu': 8, 'gpu': 1}
     )
+
+    tuner = tune.Tuner(
+        trainable_with_gpu,
+        param_space=config,
+        tune_config=tune.TuneConfig(
+            num_samples=10,
+            scheduler=scheduler,
+        )
+    )
+
+    results = tuner.fit()
     
     best_trial = result.get_best_trial("loss", "min", "last")
     print(f"Best trial config: {best_trial.config}")

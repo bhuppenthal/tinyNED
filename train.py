@@ -35,6 +35,8 @@ def make_argument_parser():
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
+    parser.add_argument('--cuda_name', action='store_true', default=1,
+                        help='choose cuda device to use')
 
     return parser
 
@@ -45,10 +47,10 @@ def load_data(data_dir):
 
     return fdset_train, fdset_val, fdset_test
 
-def train(config, data_dir):
+def train(config, data_dir, cuda_name):
     net = NED()
 
-    device = 'cuda:0'
+    device = 'cuda:'+str(cuda_name)
     net.to(device)
 
     # criterion = F.smooth_l1_loss()
@@ -162,9 +164,16 @@ def test_accuracy(net, data_dir):
     return accuracy
 
 if __name__ == '__main__':
+    '''
+    Drawing out a set of configurations for training
+    '''
     parser = make_argument_parser()
     args = parser.parse_args()
 
+    '''
+    Raytune will dray a uniform log ditributions between two values, and returns 
+    the value with the best validation loss.
+    '''
     config = {
         'lr': tune.loguniform(1e-4, 1e-1)
     }
@@ -198,7 +207,7 @@ if __name__ == '__main__':
     print(f"Best trial final validation loss: {best_trial.last_result['loss']}")
 
     best_trained_model = NED()
-    device='cuda:0'
+    device='cuda:'+str(args.cuda_name)
     best_trained_model.to(device)
 
     best_checkpoint = result.get_best_checkpoint(trial=best_trial, metric="loss", mode="min")
